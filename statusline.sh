@@ -199,26 +199,28 @@ if [ "$xu_on" = "true" ] && [ "$xu_used" != "-" ]; then
     EUR) sym="€" ;;
     *)   sym="" ;;
   esac
-  xu_used_i=${xu_used%.*}
+  # API returns amounts in minor units (pence / cents). 2898 = £28.98.
+  fmt_money() {
+    awk -v n="$1" 'BEGIN{ printf "%.2f", n/100 }'
+  }
+  xu_used_m=$(fmt_money "$xu_used")
   xu_pct_i=${xu_pct%.*}
-  # Tint by utilization when known; dim otherwise.
   if [ "$xu_pct" = "-" ]; then         tint='\033[2m'
   elif [ "$xu_pct_i" -ge 95 ]; then    tint='\033[38;5;196m'
   elif [ "$xu_pct_i" -ge 90 ]; then    tint='\033[38;5;220m'
   else                                 tint='\033[2m'
   fi
   if [ "$xu_lim" != "-" ]; then
-    xu_lim_i=${xu_lim%.*}
+    xu_lim_m=$(fmt_money "$xu_lim")
     if [ "$xu_pct" != "-" ]; then
-      printf "%b%s%s / %s%s credits · %d%%\033[0m\n" \
-        "$tint" "$sym" "$xu_used_i" "$sym" "$xu_lim_i" "$xu_pct_i"
+      printf "%b%s%s / %s%s used · %d%%\033[0m\n" \
+        "$tint" "$sym" "$xu_used_m" "$sym" "$xu_lim_m" "$xu_pct_i"
     else
-      printf "%b%s%s / %s%s credits\033[0m\n" \
-        "$tint" "$sym" "$xu_used_i" "$sym" "$xu_lim_i"
+      printf "%b%s%s / %s%s used\033[0m\n" \
+        "$tint" "$sym" "$xu_used_m" "$sym" "$xu_lim_m"
     fi
   else
-    # Just the used amount when no limit is reported.
-    printf "%b%s%s credits used\033[0m\n" "$tint" "$sym" "$xu_used_i"
+    printf "%b%s%s used\033[0m\n" "$tint" "$sym" "$xu_used_m"
   fi
 fi
 
