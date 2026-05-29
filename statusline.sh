@@ -49,9 +49,10 @@ if [ "$need_refresh" -eq 1 ] && ( set -o noclobber; : > "$LOCK" ) 2>/dev/null; t
       -H "anthropic-beta: oauth-2025-04-20" \
       -H "User-Agent: claude-cli/2.1.150 (external, cli)" \
       "$ENDPOINT" 2>/dev/null > "$CACHE.tmp"
-    # Pull the final line (status code) and the rest (body).
+    # Pull the final line (status code) and the rest (body). BSD `head`
+    # doesn't accept negative line counts, so drop the last line with sed.
     http_code=$(tail -n 1 "$CACHE.tmp" 2>/dev/null)
-    head -n -1 "$CACHE.tmp" 2>/dev/null > "$CACHE.body"
+    sed -e '$d' "$CACHE.tmp" 2>/dev/null > "$CACHE.body"
     # Only replace the cache if we got 200 AND the response has real numbers,
     # not the null-filled response Anthropic returns under transient errors.
     if [ "$http_code" = "200" ] && jq -e '.five_hour.utilization != null' "$CACHE.body" >/dev/null 2>&1; then
