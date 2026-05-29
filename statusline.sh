@@ -18,8 +18,11 @@
 set -u
 CACHE="$HOME/.claude/.usage-cache.json"
 LOCK="$HOME/.claude/.usage-cache.lock"
+ATTEMPT="$HOME/.claude/.usage-cache.attempt"  # marks last fetch *attempt*
 CACHE_TTL=45                  # how long a fresh fetch stays "fresh"
 STALE_TTL=180                 # after this we visibly label the data stale
+MIN_FETCH_INTERVAL=60         # never hit the API more than once per this (rate limit ~1/min/token)
+LOCK_STALE=20                 # a lock older than this means the holder died; reclaim it
 BAR_WIDTH=30
 ENDPOINT="https://api.anthropic.com/api/oauth/usage"
 
@@ -37,9 +40,31 @@ if [ -s "$CACHE" ]; then
   cache_age=$(( $(date +%s) - $(stat -f %m "$CACHE" 2>/dev/null || echo 0) ))
   [ "$cache_age" -lt "$CACHE_TTL" ] && need_refresh=0
 fi
+
+# Global attempt-gate. The cache mtime only advances on a *successful* fetch,
+# so on a failure (429, offline, killed mid-curl) cache_age stays high and
+# every 2 s tick would otherwise fire another curl — hammering the endpoint
+# into a permanent rate-limit. The ATTEMPT marker is touched on every attempt
+# regardless of outcome, capping real API calls at one per MIN_FETCH_INTERVAL
+# across all sessions sharing the token.
+if [ "$need_refresh" -eq 1 ] && [ -e "$ATTEMPT" ]; then
+  attempt_age=$(( $(date +%s) - $(stat -f %m "$ATTEMPT" 2>/dev/null || echo 0) ))
+  [ "$attempt_age" -lt "$MIN_FETCH_INTERVAL" ] && need_refresh=0
+fi
+
+# Reclaim a stale lock: the holder removes it via an EXIT trap, but if the
+# process was killed (Claude Code reaps a slow status line) the lock leaks and
+# would block every future refresh forever. Anything older than LOCK_STALE is
+# a corpse — clear it.
+if [ -e "$LOCK" ]; then
+  lock_age=$(( $(date +%s) - $(stat -f %m "$LOCK" 2>/dev/null || echo 0) ))
+  [ "$lock_age" -ge "$LOCK_STALE" ] && rm -f "$LOCK"
+fi
+
 # Try to take the lock; if another script is refreshing, skip.
 if [ "$need_refresh" -eq 1 ] && ( set -o noclobber; : > "$LOCK" ) 2>/dev/null; then
   trap 'rm -f "$LOCK"' EXIT
+  touch "$ATTEMPT"   # record the attempt *before* the call, win or lose
   tok=$(security find-generic-password -a "$USER" -s "Claude Code-credentials" -w 2>/dev/null \
          | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
   if [ -n "$tok" ]; then
@@ -159,7 +184,16 @@ week_e=$(to_epoch "$week_at")
 # Plan label — pulled from ~/.claude.json so we don't burn an extra API
 # round-trip. Pretty-printed and offset slightly so it doesn't crash into
 # the "Current session" header below.
+# Override: ~/.claude/.usage-plan (or $CCUSAGE_PLAN) wins over the local
+# auth state. Claude Code only refreshes organizationType from the server on
+# (re)login, so a freshly upgraded/downgraded plan reads stale here until you
+# log in again — this knob lets you pin the right label in the meantime.
+plan_override=$(cat "$HOME/.claude/.usage-plan" 2>/dev/null | head -n1)
+plan_override=${CCUSAGE_PLAN:-$plan_override}
 plan_raw=$(jq -r '.oauthAccount.organizationType // empty' "$HOME/.claude.json" 2>/dev/null)
+if [ -n "$plan_override" ]; then
+  plan="$plan_override"
+else
 case "$plan_raw" in
   claude_pro)        plan="Claude Pro" ;;
   claude_max_5x)     plan="Claude Max 5×" ;;
@@ -169,6 +203,7 @@ case "$plan_raw" in
   "")                plan="" ;;
   *)                 plan="$plan_raw" ;;
 esac
+fi
 if [ -n "$plan" ]; then
   printf "\033[2m%s\033[0m\n" "$plan"
 fi
