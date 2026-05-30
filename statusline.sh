@@ -19,9 +19,13 @@ set -u
 CACHE="$HOME/.claude/.usage-cache.json"
 LOCK="$HOME/.claude/.usage-cache.lock"
 ATTEMPT="$HOME/.claude/.usage-cache.attempt"  # marks last fetch *attempt*
+BACKOFF="$HOME/.claude/.usage-cache.backoff"  # marks last 429 (rate-limit) hit
 CACHE_TTL=45                  # how long a fresh fetch stays "fresh"
-STALE_TTL=180                 # after this we visibly label the data stale
-MIN_FETCH_INTERVAL=60         # never hit the API more than once per this (rate limit ~1/min/token)
+STALE_TTL=360                 # after this we visibly label the data stale
+MIN_FETCH_INTERVAL=60         # floor between API calls (endpoint allows ~1/min/token)
+BACKOFF_429=150               # after a 429, stay off the API this long — Claude Code
+                              # shares the token's budget, so retrying at 60s just
+                              # collides again; back off and let a 200 land
 LOCK_STALE=20                 # a lock older than this means the holder died; reclaim it
 BAR_WIDTH=30
 ENDPOINT="https://api.anthropic.com/api/oauth/usage"
@@ -50,6 +54,15 @@ fi
 if [ "$need_refresh" -eq 1 ] && [ -e "$ATTEMPT" ]; then
   attempt_age=$(( $(date +%s) - $(stat -f %m "$ATTEMPT" 2>/dev/null || echo 0) ))
   [ "$attempt_age" -lt "$MIN_FETCH_INTERVAL" ] && need_refresh=0
+fi
+
+# 429 backoff. The endpoint rate-limits per token and Claude Code's own /usage
+# polling spends from the same budget, so a plain 60s retry often lands on
+# another 429 and the cache never refreshes. After a 429 we hold off for
+# BACKOFF_429 to give a clean window a chance to return 200.
+if [ "$need_refresh" -eq 1 ] && [ -e "$BACKOFF" ]; then
+  backoff_age=$(( $(date +%s) - $(stat -f %m "$BACKOFF" 2>/dev/null || echo 0) ))
+  [ "$backoff_age" -lt "$BACKOFF_429" ] && need_refresh=0
 fi
 
 # Reclaim a stale lock: the holder removes it via an EXIT trap, but if the
@@ -83,6 +96,9 @@ if [ "$need_refresh" -eq 1 ] && ( set -o noclobber; : > "$LOCK" ) 2>/dev/null; t
     if [ "$http_code" = "200" ] && jq -e '.five_hour.utilization != null' "$CACHE.body" >/dev/null 2>&1; then
       mv "$CACHE.body" "$CACHE"
       cache_age=0
+      rm -f "$BACKOFF"                 # clean window — clear any backoff
+    elif [ "$http_code" = "429" ]; then
+      touch "$BACKOFF"                 # rate-limited — start/extend the backoff
     fi
     rm -f "$CACHE.tmp" "$CACHE.body"
   fi
