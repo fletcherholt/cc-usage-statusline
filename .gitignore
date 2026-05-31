@@ -2,3 +2,6 @@
 *.tmp
 .usage-cache.json
 .usage-cache.lock
+.usage-cache.attempt
+.usage-cache.backoff
+.usage-cache.hdr

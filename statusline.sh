@@ -16,94 +16,27 @@
 #   Resets May 31 at 1am (Europe/London)
 
 set -u
-CACHE="$HOME/.claude/.usage-cache.json"
-LOCK="$HOME/.claude/.usage-cache.lock"
-ATTEMPT="$HOME/.claude/.usage-cache.attempt"  # marks last fetch *attempt*
-BACKOFF="$HOME/.claude/.usage-cache.backoff"  # marks last 429 (rate-limit) hit
-CACHE_TTL=45                  # how long a fresh fetch stays "fresh"
-STALE_TTL=360                 # after this we visibly label the data stale
-MIN_FETCH_INTERVAL=60         # floor between API calls (endpoint allows ~1/min/token)
-BACKOFF_429=150               # after a 429, stay off the API this long — Claude Code
-                              # shares the token's budget, so retrying at 60s just
-                              # collides again; back off and let a 200 land
-LOCK_STALE=20                 # a lock older than this means the holder died; reclaim it
 BAR_WIDTH=30
-ENDPOINT="https://api.anthropic.com/api/oauth/usage"
+
+# Cache paths, fetch constants, and the locked/gated fetch all live in the
+# shared lib so the background refresher (usage-refresh.sh) uses identical
+# logic and the same rate-limit gates.
+LIB="$(cd "$(dirname "$0")" && pwd)/usage-fetch.sh"
+if [ ! -r "$LIB" ]; then
+  printf '\033[2musage: usage-fetch.sh missing — re-run install.sh\033[0m\n'
+  exit 0
+fi
+source "$LIB"
 
 # Capture the stdin Claude Code passes (we use session_id for shell scan).
 IN=$(cat)
 SESSION_ID=$(printf '%s' "$IN" | jq -r '.session_id // empty' 2>/dev/null)
 
-# Refresh the cache if it's missing or older than CACHE_TTL — guarded by
-# a file lock so the 2-second status refresh can't fire concurrent API
-# calls (each call would rate-limit the next). If we can't take the lock,
-# another renderer is already refreshing; we just use whatever's on disk.
-need_refresh=1
-cache_age=999999
-if [ -s "$CACHE" ]; then
-  cache_age=$(( $(date +%s) - $(stat -f %m "$CACHE" 2>/dev/null || echo 0) ))
-  [ "$cache_age" -lt "$CACHE_TTL" ] && need_refresh=0
-fi
-
-# Global attempt-gate. The cache mtime only advances on a *successful* fetch,
-# so on a failure (429, offline, killed mid-curl) cache_age stays high and
-# every 2 s tick would otherwise fire another curl — hammering the endpoint
-# into a permanent rate-limit. The ATTEMPT marker is touched on every attempt
-# regardless of outcome, capping real API calls at one per MIN_FETCH_INTERVAL
-# across all sessions sharing the token.
-if [ "$need_refresh" -eq 1 ] && [ -e "$ATTEMPT" ]; then
-  attempt_age=$(( $(date +%s) - $(stat -f %m "$ATTEMPT" 2>/dev/null || echo 0) ))
-  [ "$attempt_age" -lt "$MIN_FETCH_INTERVAL" ] && need_refresh=0
-fi
-
-# 429 backoff. The endpoint rate-limits per token and Claude Code's own /usage
-# polling spends from the same budget, so a plain 60s retry often lands on
-# another 429 and the cache never refreshes. After a 429 we hold off for
-# BACKOFF_429 to give a clean window a chance to return 200.
-if [ "$need_refresh" -eq 1 ] && [ -e "$BACKOFF" ]; then
-  backoff_age=$(( $(date +%s) - $(stat -f %m "$BACKOFF" 2>/dev/null || echo 0) ))
-  [ "$backoff_age" -lt "$BACKOFF_429" ] && need_refresh=0
-fi
-
-# Reclaim a stale lock: the holder removes it via an EXIT trap, but if the
-# process was killed (Claude Code reaps a slow status line) the lock leaks and
-# would block every future refresh forever. Anything older than LOCK_STALE is
-# a corpse — clear it.
-if [ -e "$LOCK" ]; then
-  lock_age=$(( $(date +%s) - $(stat -f %m "$LOCK" 2>/dev/null || echo 0) ))
-  [ "$lock_age" -ge "$LOCK_STALE" ] && rm -f "$LOCK"
-fi
-
-# Try to take the lock; if another script is refreshing, skip.
-if [ "$need_refresh" -eq 1 ] && ( set -o noclobber; : > "$LOCK" ) 2>/dev/null; then
-  trap 'rm -f "$LOCK"' EXIT
-  touch "$ATTEMPT"   # record the attempt *before* the call, win or lose
-  tok=$(security find-generic-password -a "$USER" -s "Claude Code-credentials" -w 2>/dev/null \
-         | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
-  if [ -n "$tok" ]; then
-    # Capture both the response and HTTP status so we can detect rate limits.
-    curl -sS -m 5 -w '\n%{http_code}\n' \
-      -H "Authorization: Bearer $tok" \
-      -H "anthropic-beta: oauth-2025-04-20" \
-      -H "User-Agent: claude-cli/2.1.150 (external, cli)" \
-      "$ENDPOINT" 2>/dev/null > "$CACHE.tmp"
-    # Pull the final line (status code) and the rest (body). BSD `head`
-    # doesn't accept negative line counts, so drop the last line with sed.
-    http_code=$(tail -n 1 "$CACHE.tmp" 2>/dev/null)
-    sed -e '$d' "$CACHE.tmp" 2>/dev/null > "$CACHE.body"
-    # Only replace the cache if we got 200 AND the response has real numbers,
-    # not the null-filled response Anthropic returns under transient errors.
-    if [ "$http_code" = "200" ] && jq -e '.five_hour.utilization != null' "$CACHE.body" >/dev/null 2>&1; then
-      mv "$CACHE.body" "$CACHE"
-      cache_age=0
-      rm -f "$BACKOFF"                 # clean window — clear any backoff
-    elif [ "$http_code" = "429" ]; then
-      touch "$BACKOFF"                 # rate-limited — start/extend the backoff
-    fi
-    rm -f "$CACHE.tmp" "$CACHE.body"
-  fi
-  rm -f "$LOCK"; trap - EXIT
-fi
+# Pull-on-render refresh. A launchd agent also refreshes in the background, but
+# we keep this so the line still self-updates if the agent isn't installed.
+# Both share the attempt/backoff gates, so this never doubles the API rate.
+usage_refresh_cache
+cache_age=$(age_of "$CACHE")
 
 if [ ! -s "$CACHE" ]; then
   printf '\033[2musage unavailable (no cache, no token, or offline)\033[0m\n'
@@ -174,6 +107,21 @@ stale_glyph() {
   fi
 }
 
+# Freshness cue printed just before the "Current session" header:
+#   ↻  cyan   — a network refresh happened on this very tick
+#   ●  green  — cache is fresh (< CACHE_TTL)
+#   ●  dim    — aging but not yet stale (the "(stale Nm)" tag takes over later)
+# Gives an at-a-glance signal that the numbers are live, not frozen.
+fresh_glyph() {
+  if [ "$USAGE_DID_FETCH" -eq 1 ]; then
+    printf '\033[38;5;44m↻\033[0m '
+  elif [ "$cache_age" -lt "$CACHE_TTL" ]; then
+    printf '\033[38;5;78m●\033[0m '
+  elif [ "$cache_age" -lt "$STALE_TTL" ]; then
+    printf '\033[2;38;5;78m●\033[0m '
+  fi
+}
+
 # IANA timezone label, e.g. "Europe/London". Falls back to the OS abbreviation.
 tz_label() {
   local link
@@ -224,7 +172,7 @@ if [ -n "$plan" ]; then
   printf "\033[2m%s\033[0m\n" "$plan"
 fi
 
-printf "\033[1mCurrent session\033[0m\n"
+printf "%b\033[1mCurrent session\033[0m\n" "$(fresh_glyph)"
 printf "%s  %d%% used%b%b\n" "$(bar "$hour_int")" "$hour_int" "$(warn_glyph "$hour_int")" "$(stale_glyph)"
 if [ -n "${hour_e:-}" ]; then
   printf "\033[2mResets %s (%s)\033[0m\n" "$(fmt_time "$hour_e")" "$tz"
@@ -234,6 +182,19 @@ printf "\033[1mCurrent week (all models)\033[0m\n"
 printf "%s  %d%% used%b\n" "$(bar "$week_int")" "$week_int" "$(warn_glyph "$week_int")"
 if [ -n "${week_e:-}" ]; then
   printf "\033[2mResets %s (%s)\033[0m\n" "$(fmt_full "$week_e")" "$tz"
+fi
+
+# Per-model weekly cap. Anthropic meters Opus separately on Max plans and the
+# real /usage screen shows it as its own bar — mirror that, but only when the
+# API actually returns a number for it (it's null on plans without the split).
+opus_pct=$(jq -r '.seven_day_opus.utilization // empty' "$CACHE" 2>/dev/null)
+if [ -n "$opus_pct" ]; then
+  opus_int=${opus_pct%.*}
+  opus_at=$(jq -r '.seven_day_opus.resets_at // empty' "$CACHE" 2>/dev/null)
+  opus_e=$(to_epoch "$opus_at")
+  printf "\n\033[1mCurrent week (Opus)\033[0m\n"
+  printf "%s  %d%% used%b\n" "$(bar "$opus_int")" "$opus_int" "$(warn_glyph "$opus_int")"
+  [ -n "${opus_e:-}" ] && printf "\033[2mResets %s (%s)\033[0m\n" "$(fmt_full "$opus_e")" "$tz"
 fi
 
 # Compact extra-credits tracker. Renders whatever fields we have — the

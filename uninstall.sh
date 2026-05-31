@@ -9,8 +9,18 @@ CLAUDE_DIR="$HOME/.claude"
 TARGET="$CLAUDE_DIR/statusline.sh"
 SETTINGS="$CLAUDE_DIR/settings.json"
 
-rm -f "$TARGET" "$CLAUDE_DIR/.usage-cache.json" "$CLAUDE_DIR/.usage-cache.lock"
-echo "✓ removed $TARGET and cache files"
+# Stop + remove the launchd background refresher first.
+LABEL="com.cc-usage-statusline.refresh"
+PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
+launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || launchctl unload "$PLIST" 2>/dev/null || true
+rm -f "$PLIST"
+echo "✓ removed launchd refresher ($LABEL)"
+
+rm -f "$TARGET" "$CLAUDE_DIR/usage-fetch.sh" "$CLAUDE_DIR/usage-refresh.sh" \
+      "$CLAUDE_DIR/commands/usage-refresh.md" \
+      "$CLAUDE_DIR/.usage-cache.json" "$CLAUDE_DIR/.usage-cache.lock" \
+      "$CLAUDE_DIR/.usage-cache.attempt" "$CLAUDE_DIR/.usage-cache.backoff"
+echo "✓ removed $TARGET, libs, command, and cache files"
 
 if [ -s "$SETTINGS" ]; then
   tmp=$(mktemp)
