@@ -1,8 +1,9 @@
 #!/bin/bash
 # Background usage-cache refresher for cc-usage-statusline.
 #
-# Run by a launchd agent every ~60s so the cache stays warm even when Claude
-# Code isn't rendering the status line (idle, or closed entirely). Without
+# Run by the platform's scheduler (launchd / systemd timer / Task Scheduler)
+# every ~60s so the cache stays warm even when Claude Code isn't rendering the
+# status line (idle, or closed entirely). Without
 # this, the cache only ever refreshes on a render tick and goes stale the
 # moment you stop typing. Shares the attempt/backoff gates with the renderer
 # (see usage-fetch.sh), so it never adds API pressure beyond 1 call/min.
@@ -22,7 +23,7 @@ fi
 
 # Print the current numbers so a manual run shows its result.
 if [ -s "$HOME/.claude/.usage-cache.json" ]; then
-  age=$(( $(date +%s) - $(stat -f %m "$HOME/.claude/.usage-cache.json") ))
+  age=$(( $(cc_now) - $(cc_mtime "$HOME/.claude/.usage-cache.json") ))
   printf 'usage cache: %ds old · session %s%% · week %s%%\n' "$age" \
     "$(jq -r '.five_hour.utilization // "?"' "$HOME/.claude/.usage-cache.json")" \
     "$(jq -r '.seven_day.utilization // "?"' "$HOME/.claude/.usage-cache.json")"

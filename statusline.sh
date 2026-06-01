@@ -44,30 +44,27 @@ if [ ! -s "$CACHE" ]; then
 fi
 
 # Convert ISO-8601 UTC "2026-05-29T20:50:00.637102+00:00" to an epoch.
-to_epoch() {
-  local s="$1"
-  # Strip fractional seconds and timezone suffix so BSD date matches the fmt.
-  s="${s%%.*}"; s="${s%%+*}"; s="${s%%-00:00}"
-  date -j -u -f "%Y-%m-%dT%H:%M:%S" "$s" "+%s" 2>/dev/null
-}
+# (Parsing branches per-OS in the compat layer.)
+to_epoch() { cc_iso_to_epoch "$1"; }
 
-# BSD date with British locale spells the meridiem as "9:50 p.m." — strip
-# the periods and the space so we get "9:50pm" like the /usage screenshot.
+# date with a British locale spells the meridiem as "9:50 p.m." — strip the
+# periods and the space so we get "9:50pm" like the /usage screenshot.
 clean_meridiem() {
   printf '%s' "$1" | tr -d '.' | tr -d ' ' | tr '[:upper:]' '[:lower:]'
 }
 
 # Format an epoch as "9:50pm".
 fmt_time() {
-  local out; out=$(date -j -r "$1" "+%-I:%M%p" 2>/dev/null) || return
+  local out; out=$(cc_epoch_fmt "$1" "%-I:%M%p") || return
+  [ -n "$out" ] || return
   clean_meridiem "$out"
 }
 
 # Format an epoch as "May 31 at 1am".
 fmt_full() {
   local d t
-  d=$(date -j -r "$1" "+%b %-d" 2>/dev/null) || return
-  t=$(date -j -r "$1" "+%-I%p" 2>/dev/null) || return
+  d=$(cc_epoch_fmt "$1" "%b %-d") || return
+  t=$(cc_epoch_fmt "$1" "%-I%p") || return
   printf '%s at %s' "$d" "$(clean_meridiem "$t")"
 }
 

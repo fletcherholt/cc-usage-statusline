@@ -1,0 +1,34 @@
+name: test
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install jq (macOS)
+        if: runner.os == 'macOS'
+        run: brew install jq
+
+      - name: Install jq (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y jq
+
+      - name: Install jq (Windows)
+        if: runner.os == 'Windows'
+        run: choco install jq -y
+
+      # On Windows this runs under Git Bash (MINGW64), which is the same
+      # environment Claude Code uses to invoke the status line there.
+      - name: Run tests
+        shell: bash
+        run: bash test.sh

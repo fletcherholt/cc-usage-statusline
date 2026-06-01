@@ -24,14 +24,16 @@ Resets May 31 at 1am (Europe/London)
 ## What it does
 
 - Polls `https://api.anthropic.com/api/oauth/usage` (the same endpoint the
-  built-in `/usage` command hits) using the OAuth token already in your macOS
-  Keychain — no extra setup.
+  built-in `/usage` command hits) using the OAuth token Claude Code already
+  stored (macOS Keychain, or `~/.claude/.credentials.json` on Linux/Windows) —
+  no extra setup.
 - Bars turn **yellow at ≥ 90 %** and **red at ≥ 95 %** with a small `!` cue.
 - A **freshness glyph** sits before the session header so you can trust the
   numbers at a glance: `●` fresh · dim `●` aging · `↻` refreshing right now ·
   `(stale Nm)` if a refresh hasn't landed in a while.
-- A **launchd background agent** refreshes the cache every 60 s even when
-  Claude Code is idle or closed, so the line is warm the moment you look.
+- A **background refresher** keeps the cache warm every 60 s even when Claude
+  Code is idle or closed, so the line is warm the moment you look (launchd on
+  macOS, a systemd user timer / cron on Linux, Task Scheduler on Windows).
 - **Self-healing:** the usage endpoint only allows a small burst per minute on
   your token — and Claude Code's own `/usage` polling spends from the same
   budget — so individual fetches sometimes get rate-limited (HTTP 429). When
@@ -47,9 +49,24 @@ Resets May 31 at 1am (Europe/London)
 
 ## Requirements
 
-- macOS (Keychain for the OAuth token + BSD `date`/`stat`).
-- `jq` (`brew install jq`).
+- `bash` + `jq`. On Windows, run inside **Git Bash** or **WSL** (the same shell
+  Claude Code uses to invoke the status line there).
+  - jq: `brew install jq` (macOS) · `sudo apt install jq` (Linux) ·
+    `winget install jqlang.jq` (Windows).
 - A Claude.ai or Console subscription already signed into Claude Code.
+
+### Platform support
+
+| Platform | Token source | Date/stat | Background refresher |
+|---|---|---|---|
+| macOS | Keychain | BSD | launchd agent |
+| Linux (incl. WSL) | `~/.claude/.credentials.json` | GNU | systemd user timer → cron → pull-only |
+| Windows (Git Bash) | `~/.claude/.credentials.json` | GNU (Git Bash) | Task Scheduler → pull-only |
+
+All OS-specific behavior lives in one file, `platform.sh` (the `cc_*` helpers);
+the rest of the code is identical everywhere. If the background refresher can't
+be installed (no systemd/cron/Task Scheduler), the line still self-refreshes on
+every render — you just lose the warm-while-idle updates.
 
 ## Install
 
@@ -61,14 +78,15 @@ bash install.sh
 
 The installer:
 
-1. Copies `statusline.sh`, the shared `usage-fetch.sh` lib, and the
-   `usage-refresh.sh` background updater to `~/.claude/`.
+1. Copies `statusline.sh`, the `platform.sh` compat layer, the shared
+   `usage-fetch.sh` lib, and the `usage-refresh.sh` background updater to
+   `~/.claude/`.
 2. Merges a `statusLine` entry into `~/.claude/settings.json` (refresh every 2 s).
 3. Adds a `SessionStart` hook that disables Claude Code's built-in usage-warning
    bar. (Idempotent — re-running never piles up duplicates.)
 4. Installs the `/usage-refresh` command to `~/.claude/commands/`.
-5. Loads a launchd agent (`com.cc-usage-statusline.refresh`) that refreshes the
-   cache every 60 s.
+5. Registers the background refresher for your OS (launchd / systemd timer /
+   cron / Task Scheduler) to refresh the cache every 60 s.
 
 Existing settings are preserved. Restart Claude Code and the line appears above
 your prompt. (Slash commands are picked up without a restart.)
@@ -79,8 +97,9 @@ your prompt. (Slash commands are picked up without a restart.)
 bash uninstall.sh
 ```
 
-Removes the scripts, the launchd agent, the `/usage-refresh` command, our
-`statusLine` entry and `SessionStart` hook, and the cache files.
+Removes the scripts, the background refresher (launchd / systemd / cron / Task
+Scheduler), the `/usage-refresh` command, our `statusLine` entry and
+`SessionStart` hook, and the cache files.
 
 ## The status line says `(stale Nm)`
 
@@ -117,8 +136,8 @@ upgrade/downgrade, pin it with `echo "Claude Max 20×" > ~/.claude/.usage-plan`
 
 ## How refreshes stay cheap
 
-All callers — the 2-second status render, the 60-second launchd agent, and
-`/usage-refresh` — share one fetch path (`usage-fetch.sh`) gated by on-disk
+All callers — the 2-second status render, the 60-second background refresher,
+and `/usage-refresh` — share one fetch path (`usage-fetch.sh`) gated by on-disk
 markers (`.usage-cache.attempt`, `.usage-cache.backoff`) and a lock. So no
 matter how many render ticks fire, real API calls are capped at roughly one per
 minute and never overlap, which keeps you from rate-limiting yourself.
@@ -130,12 +149,14 @@ bash test.sh
 ```
 
 Hermetic — seeds a mock cache in a throwaway `HOME` and asserts on the rendered
-output and the installer's settings merge. No network, no Keychain.
+output, the compat layer (`cc_*`), and the installer's settings merge. No
+network, no Keychain. CI runs it on macOS, Linux, and Windows (Git Bash).
 
 ## Known limitations
 
-- macOS only. A Linux/Windows port needs a different credential-store read and
-  GNU `date`/`stat` syntax.
+- The background refresher needs a per-OS scheduler (launchd / systemd-user /
+  cron / Task Scheduler). Where none is available — e.g. a container or a WSL
+  distro without systemd — it falls back to pull-on-render only.
 - The numbers are as live as the rate limit allows. Claude Code does not persist
   utilization to disk, so the data can only come from the (rate-limited) API —
   hence the caching, background agent, and `/usage-refresh` escape hatch.

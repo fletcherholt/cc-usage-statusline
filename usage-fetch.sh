@@ -9,6 +9,27 @@
 # the background refresher therefore can't increase 429 pressure; it just
 # fills the gaps when Claude isn't rendering the status line.
 
+# Cross-platform compat layer (cc_* helpers for mtime/date/token). Sourced from
+# this file's own directory so it resolves the same whether we're run directly
+# or sourced by statusline.sh / usage-refresh.sh. If it's somehow missing (an
+# old install that predates platform.sh), define a compact inline fallback so
+# the script still works on the OS it's running on instead of hard-failing.
+_CC_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
+if [ -r "$_CC_LIB_DIR/platform.sh" ]; then
+  source "$_CC_LIB_DIR/platform.sh"
+fi
+if ! type cc_now >/dev/null 2>&1; then
+  case "$(uname -s 2>/dev/null)" in
+    Darwin) CC_OS=macos ;; MINGW*|MSYS*|CYGWIN*) CC_OS=windows ;; *) CC_OS=linux ;;
+  esac
+  cc_now(){ date +%s; }
+  cc_mtime(){ [ -e "$1" ] || return 1; if [ "$CC_OS" = macos ]; then stat -f %m "$1" 2>/dev/null; else stat -c %Y "$1" 2>/dev/null; fi; }
+  cc_iso_to_epoch(){ local s="$1"; s="${s%%.*}"; s="${s%%+*}"; s="${s%%-00:00}"; if [ "$CC_OS" = macos ]; then date -j -u -f "%Y-%m-%dT%H:%M:%S" "$s" "+%s" 2>/dev/null; else date -u -d "${s}Z" "+%s" 2>/dev/null; fi; }
+  cc_epoch_fmt(){ if [ "$CC_OS" = macos ]; then date -j -r "$1" "+$2" 2>/dev/null; else date -d "@$1" "+$2" 2>/dev/null; fi; }
+  cc_get_token(){ local t=""; if [ "$CC_OS" = macos ]; then t=$(security find-generic-password -a "$USER" -s "Claude Code-credentials" -w 2>/dev/null | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null); fi; [ -z "$t" ] && [ -r "$HOME/.claude/.credentials.json" ] && t=$(jq -r '.claudeAiOauth.accessToken // empty' "$HOME/.claude/.credentials.json" 2>/dev/null); printf '%s' "$t"; }
+  cc_versions_dir(){ local d; for d in "$HOME/.local/share/claude/versions" "${LOCALAPPDATA:-}/claude/versions" "${APPDATA:-}/claude/versions"; do [ -n "$d" ] && [ -d "$d" ] && { printf '%s' "$d"; return; }; done; }
+fi
+
 CACHE="$HOME/.claude/.usage-cache.json"
 LOCK="$HOME/.claude/.usage-cache.lock"
 ATTEMPT="$HOME/.claude/.usage-cache.attempt"  # marks last fetch *attempt*
@@ -33,7 +54,9 @@ ENDPOINT="https://api.anthropic.com/api/oauth/usage"
 # User-Agent must look like the real CLI. Detect the installed Claude Code
 # version so the header doesn't drift out of date as Claude updates (a stale UA
 # risks the endpoint treating us differently). Falls back to a known-good value.
-USAGE_UA_VER=$(ls -t "$HOME/.local/share/claude/versions/" 2>/dev/null \
+USAGE_UA_VER=""
+_cc_vdir=$(cc_versions_dir)
+[ -n "$_cc_vdir" ] && USAGE_UA_VER=$(ls -t "$_cc_vdir" 2>/dev/null \
                  | grep -E '^[0-9]+\.[0-9]+' | head -n1)
 [ -n "$USAGE_UA_VER" ] || USAGE_UA_VER="2.1.158"
 USAGE_UA="claude-cli/$USAGE_UA_VER (external, cli)"
@@ -42,10 +65,12 @@ USAGE_UA="claude-cli/$USAGE_UA_VER (external, cli)"
 # line show a ↻ "updating" glyph on the tick where it refreshed.
 USAGE_DID_FETCH=0
 
-# age_of FILE -> seconds since mtime (huge number if absent).
+# age_of FILE -> seconds since mtime (huge number if absent). Delegates the
+# stat syscall to the compat layer (BSD vs GNU).
 age_of() {
-  [ -e "$1" ] || { echo 999999; return; }
-  echo $(( $(date +%s) - $(stat -f %m "$1" 2>/dev/null || echo 0) ))
+  local m; m=$(cc_mtime "$1") || { echo 999999; return; }
+  [ -n "$m" ] || { echo 999999; return; }
+  echo $(( $(cc_now) - m ))
 }
 
 # Refresh the cache if it's missing or older than CACHE_TTL — guarded by a
@@ -118,8 +143,7 @@ usage_refresh_cache() {
   USAGE_DID_FETCH=1
 
   local tok http_code retry_after
-  tok=$(security find-generic-password -a "$USER" -s "Claude Code-credentials" -w 2>/dev/null \
-         | jq -r '.claudeAiOauth.accessToken // empty' 2>/dev/null)
+  tok=$(cc_get_token)
   if [ -n "$tok" ]; then
     # -D dumps response headers so we can read Retry-After on a 429.
     curl -sS -m 5 -D "$CACHE.hdr" -w '\n%{http_code}\n' \

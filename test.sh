@@ -11,9 +11,38 @@ strip(){ sed $'s/\033\\[[0-9;]*m//g'; }
 
 # --- syntax ---
 echo "syntax:"
-for f in usage-fetch.sh usage-refresh.sh statusline.sh install.sh uninstall.sh test.sh; do
+for f in platform.sh usage-fetch.sh usage-refresh.sh statusline.sh install.sh uninstall.sh test.sh; do
   if bash -n "$SRC_DIR/$f" 2>/dev/null; then ok "$f parses"; else bad "$f parse error"; fi
 done
+
+# --- cross-platform compat layer ---
+echo "platform compat layer (native = $(uname -s)):"
+# cc_now numeric; cc_iso_to_epoch exact on a fixed UTC instant; cc_epoch_fmt
+# formats in local time (pinned to UTC here). These exercise the host's real
+# date/stat branch, so they also validate the GNU path on the Linux/Windows CI.
+if ( source "$SRC_DIR/platform.sh"
+     n=$(cc_now);                          case "$n" in ''|*[!0-9]*) exit 1;; esac
+     [ "$(cc_iso_to_epoch '1970-01-01T00:00:01+00:00')" = "1" ] || exit 2
+     [ "$(TZ=UTC cc_epoch_fmt 1 '%Y')" = "1970" ]               || exit 3
+   ); then ok "cc_now / cc_iso_to_epoch / cc_epoch_fmt correct"; else bad "compat date/epoch funcs wrong"; fi
+
+# cc_mtime returns a numeric epoch for an existing file (native stat branch).
+TF=$(mktemp)
+m=$( source "$SRC_DIR/platform.sh"; cc_mtime "$TF" )
+case "$m" in ''|*[!0-9]*) bad "cc_mtime non-numeric: '$m'";; *) ok "cc_mtime numeric";; esac
+rm -f "$TF"
+
+# cc_get_token reads ~/.claude/.credentials.json (forced linux branch so the
+# test is deterministic on any host — this path is pure jq+file, no date/stat).
+TD=$(mktemp -d); mkdir -p "$TD/.claude"
+printf '%s' '{"claudeAiOauth":{"accessToken":"tok-abc123"}}' > "$TD/.claude/.credentials.json"
+got=$(HOME="$TD" CC_FORCE_OS=linux bash -c "source '$SRC_DIR/platform.sh'; cc_get_token")
+[ "$got" = "tok-abc123" ] && ok "cc_get_token reads .credentials.json" || bad "token read got: '$got'"
+rm -rf "$TD"
+
+# CC_FORCE_OS override is honoured.
+forced=$(CC_FORCE_OS=windows bash -c "source '$SRC_DIR/platform.sh'; printf '%s' \"\$CC_OS\"")
+[ "$forced" = "windows" ] && ok "CC_FORCE_OS overrides detection" || bad "CC_FORCE_OS ignored: '$forced'"
 
 # --- jq filter in install.sh is valid + idempotent ---
 echo "install.sh hook merge:"
