@@ -20,6 +20,11 @@ BACKOFF_429=60               # after a 429, stay off the API this long. The toke
                              # ~8-burst/min budget refills within tens of seconds, so
                              # 60s usually lands in a fresh 200 window; longer just
                              # prolongs staleness when Claude's own polling contends
+MAX_BACKOFF=120              # ceiling for a server Retry-After. The endpoint allows
+                             # ~1/min, so any larger value is almost certainly a
+                             # transient over-share; honouring a literal 3600 would
+                             # freeze the cache (and even force/stale-retry) for an
+                             # hour. Cap it so one rogue header can't wedge us.
 LOCK_STALE=20                # a lock older than this means the holder died; reclaim it
 STALE_RETRY=15               # once data is stale, retry this fast (overrides the
                              # attempt/backoff floors) so wake-from-sleep recovers
@@ -90,7 +95,9 @@ usage_refresh_cache() {
   # — so we never retry sooner than the server wants, nor sit idle longer than
   # needed. The floor is shortened while stale so one unlucky 429 can't freeze
   # a recovery. (Observed Retry-After is usually 0, i.e. the floor governs.)
-  if [ "$need_refresh" -eq 1 ] && [ -e "$BACKOFF" ]; then
+  # A manual force skips this entirely — it's the escape hatch, so it must not
+  # be gated by a stored Retry-After (a literal 3600 once wedged it for an hour).
+  if [ "$force" != "force" ] && [ "$need_refresh" -eq 1 ] && [ -e "$BACKOFF" ]; then
     local want; want=$(cat "$BACKOFF" 2>/dev/null)
     [[ "$want" =~ ^[0-9]+$ ]] || want=0
     [ "$want" -lt "$backoff_floor" ] && want="$backoff_floor"
@@ -131,6 +138,7 @@ usage_refresh_cache() {
       # Record how long the server told us to wait (default 0 → our floor wins).
       retry_after=$(grep -i '^retry-after:' "$CACHE.hdr" 2>/dev/null | tr -d '\r' | awk '{print $2}')
       [[ "$retry_after" =~ ^[0-9]+$ ]] || retry_after=0
+      [ "$retry_after" -gt "$MAX_BACKOFF" ] && retry_after="$MAX_BACKOFF"
       printf '%s' "$retry_after" > "$BACKOFF"
     fi
     rm -f "$CACHE.tmp" "$CACHE.body" "$CACHE.hdr"
