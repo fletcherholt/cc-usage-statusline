@@ -1,5 +1,7 @@
 # cc-usage-statusline
 
+[![Support me on Ko-fi](https://img.shields.io/badge/Support%20me-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white&style=for-the-badge)](https://ko-fi.com/fletcherholt)
+
 A live usage status line for [Claude Code](https://www.anthropic.com/claude-code).
 Shows your current 5-hour session usage, weekly usage (plus a separate Opus bar
 on plans that meter it), your plan name, and extra credits — always visible
@@ -162,6 +164,12 @@ network, no Keychain. CI runs it on macOS, Linux, and Windows (Git Bash).
   hence the caching, background agent, and `/usage-refresh` escape hatch.
 - Partial API responses (missing `monthly_limit`/`utilization`) are rendered
   with whatever fields are present; missing lines are skipped rather than faked.
+
+## Support
+
+If this saved you a trip to `/usage`, you can buy me a coffee:
+
+[![Support me on Ko-fi](https://img.shields.io/badge/Support%20me-Ko--fi-FF5E5B?logo=ko-fi&logoColor=white&style=for-the-badge)](https://ko-fi.com/fletcherholt)
 
 ## License
 
