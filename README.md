@@ -9,19 +9,14 @@ above the prompt, no `/usage` slash command required.
 
 ```
 Claude Max 5×
-● Current session
-▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌░░  95% used  !
-Resets 9:50pm (Europe/London)
-
-Current week (all models)
-▌▌▌▌░░░░░░░░░░░░░░░░░░░░░░░░░░  15% used
-Resets May 31 at 1am (Europe/London)
-
-Current week (Opus)
-▌▌▌▌▌▌▌▌▌▌▌░░░░░░░░░░░░░░░░░░░  42% used
-Resets May 31 at 1am (Europe/London)
+● Current session                    Current week (all models)            Current week (Opus)
+▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌▌░░  95% used !   ▌▌▌░░░░░░░░░░░░░░░░░░░  15% used     ▌▌▌▌▌▌▌▌▌░░░░░░░░░░░░░  42% used
+Resets 9:50pm (Europe/London)        Resets May 31 at 1am (Europe/London) Resets May 31 at 1am (Europe/London)
 £17.70 / £25.00 used · 70%
 ```
+
+On narrower terminals/panes it falls back to the original stacked layout (one
+block per row) so nothing wraps or garbles.
 
 ## What it does
 
