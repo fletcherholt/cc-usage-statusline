@@ -63,8 +63,12 @@ echo '{"hooks":{"SessionStart":[{"hooks":[{"command":"my own thing"}]}]}}' | jq 
   && ok "preserves a pre-existing unrelated hook" || bad "dropped an unrelated hook"
 
 # --- render tests in a throwaway HOME ---
-render() { # $1 = stdin json ; uses $HOME mock
-  printf '%s' "${1:-{\}}" | bash "$SRC_DIR/statusline.sh" 2>/dev/null | strip
+# CC_STATUSLINE_WIDTH pins the layout width so results don't depend on
+# whether the test runner has a real TTY attached. 100 cols is wide enough
+# for the 3-column (session/week/opus) layout, so these tests exercise the
+# new column-mode rendering by default.
+render() { # $1 = stdin json ; $2 = optional CC_STATUSLINE_WIDTH override ; uses $HOME mock
+  printf '%s' "${1:-{\}}" | CC_STATUSLINE_WIDTH="${2:-100}" bash "$SRC_DIR/statusline.sh" 2>/dev/null | strip
 }
 T=$(mktemp -d); export HOME="$T"; mkdir -p "$T/.claude"
 # Gate the fetch off hard so tests never touch the network.
@@ -116,6 +120,22 @@ seed <<'JSON'
 JSON
 out=$(render '{"session_id":"t"}')
 grep -q "Current week (Opus)" <<<"$out" && bad "Opus line shown when null" || ok "no Opus line when null"
+
+echo "render — narrow terminal falls back to stacked layout:"
+seed <<'JSON'
+{"five_hour":{"utilization":73.0,"resets_at":"2026-05-31T20:50:00+00:00"},
+ "seven_day":{"utilization":13.0,"resets_at":"2026-06-01T00:00:00+00:00"}}
+JSON
+out=$(render '{"session_id":"t"}' 50)
+grep -q "73% used"                   <<<"$out" && ok "session percent (narrow)" || bad "session percent (narrow)"
+grep -q "13% used"                   <<<"$out" && ok "week percent (narrow)"    || bad "week percent (narrow)"
+session_line=$(grep "Current session" <<<"$out")
+grep -q "Current week" <<<"$session_line" && bad "columns still joined below width threshold" || ok "stacked below width threshold"
+
+echo "render — wide terminal joins session/week onto one row:"
+out=$(render '{"session_id":"t"}' 100)
+session_line=$(grep "Current session" <<<"$out")
+grep -q "Current week (all models)" <<<"$session_line" && ok "wide terminal uses column layout" || bad "wide terminal did not join columns"
 
 rm -rf "$T"
 echo
