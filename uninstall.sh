@@ -1,23 +1,25 @@
 #!/usr/bin/env bash
-# Uninstaller for cc-usage-statusline. Removes the script + our statusLine
-# entry + our SessionStart hook from settings.json. Leaves the rest of
-# your settings alone.
+# Uninstaller for cc-usage-statusline. Removes our scripts and our statusLine
+# entry + SessionStart hook from settings.json, plus any leftovers from older
+# (OAuth-fetch) versions. Leaves the rest of your settings alone.
 
 set -euo pipefail
 
 CLAUDE_DIR="$HOME/.claude"
 TARGET="$CLAUDE_DIR/statusline.sh"
 SETTINGS="$CLAUDE_DIR/settings.json"
-
-# Stop + remove the background refresher first — mechanism is per-OS.
 LABEL="com.cc-usage-statusline.refresh"
+
+# Stop + remove any background refresher shipped by older versions.
 case "$(uname -s 2>/dev/null)" in
   Darwin)
     PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-    launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || launchctl unload "$PLIST" 2>/dev/null || true
-    rm -f "$PLIST"
-    echo "✓ removed launchd refresher ($LABEL)"
-    ;;
+    if [ -e "$PLIST" ]; then
+      launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null \
+        || launchctl unload "$PLIST" 2>/dev/null || true
+      rm -f "$PLIST"
+      echo "✓ removed old launchd refresher"
+    fi ;;
   Linux)
     if command -v systemctl >/dev/null 2>&1; then
       systemctl --user disable --now cc-usage-refresh.timer 2>/dev/null || true
@@ -27,21 +29,17 @@ case "$(uname -s 2>/dev/null)" in
     fi
     if command -v crontab >/dev/null 2>&1; then
       crontab -l 2>/dev/null | grep -vF "usage-refresh.sh" | crontab - 2>/dev/null || true
-    fi
-    echo "✓ removed systemd timer / cron refresher"
-    ;;
+    fi ;;
   MINGW*|MSYS*|CYGWIN*)
-    command -v schtasks >/dev/null 2>&1 && schtasks //Delete //F //TN "$LABEL" >/dev/null 2>&1 || true
-    echo "✓ removed scheduled-task refresher"
-    ;;
+    command -v schtasks >/dev/null 2>&1 && schtasks //Delete //F //TN "$LABEL" >/dev/null 2>&1 || true ;;
 esac
 
-rm -f "$TARGET" "$CLAUDE_DIR/platform.sh" "$CLAUDE_DIR/usage-fetch.sh" \
-      "$CLAUDE_DIR/usage-refresh.sh" \
+rm -f "$TARGET" "$CLAUDE_DIR/platform.sh" \
+      "$CLAUDE_DIR/usage-fetch.sh" "$CLAUDE_DIR/usage-refresh.sh" \
       "$CLAUDE_DIR/commands/usage-refresh.md" \
       "$CLAUDE_DIR/.usage-cache.json" "$CLAUDE_DIR/.usage-cache.lock" \
       "$CLAUDE_DIR/.usage-cache.attempt" "$CLAUDE_DIR/.usage-cache.backoff"
-echo "✓ removed $TARGET, libs, command, and cache files"
+echo "✓ removed $TARGET and support files"
 
 if [ -s "$SETTINGS" ]; then
   tmp=$(mktemp)
